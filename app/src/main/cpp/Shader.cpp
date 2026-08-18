@@ -65,12 +65,16 @@ Shader *Shader::loadShader(
             GLint lightColorUniform = glGetUniformLocation(program, lightColorUniformName.c_str());
             GLint lightEnabledUniform = glGetUniformLocation(program, lightEnabledUniformName.c_str());
 
-            // Only create a new shader if all the attributes are found.
-            if (positionAttribute != -1
-                && uvAttribute != -1
-                && projectionMatrixUniform != -1
-                && colorUniform != -1) {
+            // Ensure the sampler uses texture unit 0
+            glUseProgram(program);
+            GLint uTextureLocation = glGetUniformLocation(program, "uTexture");
+            if (uTextureLocation != -1) {
+                glUniform1i(uTextureLocation, 0);
+            }
 
+            // Create a new shader even if some uniforms are not found.
+            // Critical attributes are position and UV.
+            if (positionAttribute != -1 && uvAttribute != -1) {
                 shader = new Shader(
                         program,
                         positionAttribute,
@@ -135,6 +139,10 @@ void Shader::deactivate() const {
 }
 
 void Shader::drawModel(const Model &model) const {
+    // Force client-side arrays by unbinding any VBOs
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
     // The position attribute is 3 floats
     glVertexAttribPointer(
             position_, // attrib
@@ -186,5 +194,9 @@ void Shader::setLightParams(float *pos, float *dir, float *color, bool enabled) 
     if (lightPos_ != -1) glUniform3fv(lightPos_, 1, pos);
     if (lightDir_ != -1) glUniform3fv(lightDir_, 1, dir);
     if (lightColor_ != -1) glUniform4fv(lightColor_, 1, color);
+    if (lightEnabled_ != -1) glUniform1i(lightEnabled_, enabled ? 1 : 0);
+}
+
+void Shader::setLightEnabled(bool enabled) const {
     if (lightEnabled_ != -1) glUniform1i(lightEnabled_, enabled ? 1 : 0);
 }

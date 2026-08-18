@@ -64,16 +64,17 @@ Utility::buildOrthographicMatrix(float *outMatrix, float halfHeight, float aspec
 }
 
 void Utility::multiplyMatrices(float *out, const float *a, const float *b) {
-    float tmp[16];
-    for (int c = 0; c < 4; c++) {
-        for (int r = 0; r < 4; r++) {
-            tmp[c * 4 + r] = a[0 * 4 + r] * b[c * 4 + 0] +
-                             a[1 * 4 + r] * b[c * 4 + 1] +
-                             a[2 * 4 + r] * b[c * 4 + 2] +
-                             a[3 * 4 + r] * b[c * 4 + 3];
+    float res[16];
+    for (int col = 0; col < 4; col++) {
+        for (int row = 0; row < 4; row++) {
+            float sum = 0.0f;
+            for (int k = 0; k < 4; k++) {
+                sum += a[k * 4 + row] * b[col * 4 + k];
+            }
+            res[col * 4 + row] = sum;
         }
     }
-    for (int i = 0; i < 16; i++) out[i] = tmp[i];
+    for (int i = 0; i < 16; i++) out[i] = res[i];
 }
 
 void Utility::buildTranslationMatrix(float *outMatrix, float x, float y, float z) {
@@ -101,7 +102,8 @@ void Utility::buildScaleMatrix(float *outMatrix, float sx, float sy, float sz) {
 }
 
 float *Utility::buildPerspectiveMatrix(float *outMatrix, float fov, float aspect, float near, float far) {
-    float f = 1.0f / tanf(fov * (M_PI / 360.0f));
+    float fovInRadians = fov * (static_cast<float>(M_PI) / 180.0f);
+    float f = 1.0f / tanf(fovInRadians / 2.0f);
     float rangeInv = 1.0f / (near - far);
 
     outMatrix[0] = f / aspect;

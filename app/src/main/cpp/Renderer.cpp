@@ -48,11 +48,14 @@ in vec3 inPosition;
 in vec2 inUV;
 
 out vec2 fragUV;
+out vec3 fragPos;
 
 uniform mat4 uMVP;
+uniform mat4 uModel;
 
 void main() {
     fragUV = inUV;
+    fragPos = vec3(uModel * vec4(inPosition, 1.0));
     gl_Position = uMVP * vec4(inPosition, 1.0);
 }
 )vertex";
@@ -62,14 +65,34 @@ static const char *fragment = R"fragment(#version 300 es
 precision mediump float;
 
 in vec2 fragUV;
+in vec3 fragPos;
 
 uniform sampler2D uTexture;
 uniform vec4 uColor;
 
+uniform vec3 uLightPos;
+uniform vec3 uLightDir;
+uniform vec4 uLightColor;
+uniform bool uLightEnabled;
+
 out vec4 outColor;
 
 void main() {
-    outColor = texture(uTexture, fragUV) * uColor;
+    vec4 texColor = texture(uTexture, fragUV) * uColor;
+    if (!uLightEnabled) {
+        outColor = texColor;
+        return;
+    }
+    vec3 lightToFrag = normalize(fragPos - uLightPos);
+    float dist = length(fragPos - uLightPos);
+    float theta = dot(lightToFrag, normalize(uLightDir));
+
+    // Spotlight cone: roughly 30 degrees (cos(15) ~ 0.96)
+    if (theta > 0.96 && dist < 20.0) {
+        float intensity = smoothstep(0.95, 0.98, theta) * (1.0 - dist / 20.0);
+        texColor.rgb += uLightColor.rgb * intensity * uLightColor.a;
+    }
+    outColor = texColor;
 }
 )fragment";
 
@@ -396,6 +419,8 @@ void Renderer::render() {
     // changed.
     updateRenderArea();
 
+    if (width_ <= 0 || height_ <= 0) return;
+
     // When the renderable area changes, the projection matrix has to also be updated. This is true
     // even if you change from the sample orthographic projection matrix as your aspect ratio has
     // likely changed.
@@ -412,10 +437,17 @@ void Renderer::render() {
     }
 
     // clear the color buffer
+    glClearColor(0.53f, 0.81f, 0.92f, 1.0f); // Sky Blue
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
 
     shader_->setColor(1.0f, 1.0f, 1.0f, 1.0f);
+
+    // Headlight logic
+    float lightPos[3] = { carX_ + sinf(carRotation_) * 1.0f, 0.8f + carY_, carZ_ + cosf(carRotation_) * 1.0f };
+    float lightDir[3] = { sinf(carRotation_), sinf(carPitch_), cosf(carRotation_) };
+    float lightColor[4] = { 1.0f, 1.0f, 0.8f, 1.5f }; // yellowish, slightly overbright
+    shader_->setLightParams(lightPos, lightDir, lightColor, areHeadlightsOn_ && gameState_ == GameState::GAMEPLAY);
 
     // View matrix (Camera)
     float viewMatrix[16];
@@ -436,10 +468,14 @@ void Renderer::render() {
         float mvp[16];
         float tmp[16];
 
+        shader_->setColor(1.0f, 1.0f, 1.0f, 1.0f);
+        shader_->setLightEnabled(areHeadlightsOn_ && gameState_ == GameState::GAMEPLAY);
+
         // Ground is static at (0,0,0)
         Utility::buildIdentityMatrix(modelMatrix);
         Utility::multiplyMatrices(tmp, viewMatrix, modelMatrix);
         Utility::multiplyMatrices(mvp, projectionMatrix_, tmp);
+        shader_->setModelMatrix(modelMatrix);
         shader_->setProjectionMatrix(mvp);
         shader_->drawModel(models_[0]);
     }
@@ -459,6 +495,7 @@ void Renderer::render() {
 
             Utility::multiplyMatrices(tmp, viewMatrix, modelMatrix);
             Utility::multiplyMatrices(mvp, projectionMatrix_, tmp);
+            shader_->setModelMatrix(modelMatrix);
             shader_->setProjectionMatrix(mvp);
             shader_->setColor(0.3f, 0.2f, 0.1f, 0.8f); // Mud brown
             shader_->drawModel(models_[10]);
@@ -480,6 +517,7 @@ void Renderer::render() {
 
             Utility::multiplyMatrices(tmp, viewMatrix, modelMatrix);
             Utility::multiplyMatrices(mvp, projectionMatrix_, tmp);
+            shader_->setModelMatrix(modelMatrix);
             shader_->setProjectionMatrix(mvp);
             shader_->setColor(0.6f, 0.6f, 0.6f, 1.0f); // Grey ramp
             shader_->drawModel(models_[11]);
@@ -495,6 +533,9 @@ void Renderer::render() {
         float mvp[16];
         float tmp[16];
 
+        shader_->setColor(1.0f, 1.0f, 1.0f, 1.0f);
+        shader_->setLightEnabled(areHeadlightsOn_ && gameState_ == GameState::GAMEPLAY);
+
         Utility::buildTranslationMatrix(translation, carX_, 0.5f + carY_, carZ_);
         Utility::buildRotationYMatrix(rotY, carRotation_);
         // Manual Pitch (Rotation X)
@@ -509,6 +550,7 @@ void Renderer::render() {
         Utility::multiplyMatrices(tmp, viewMatrix, modelMatrix);
         Utility::multiplyMatrices(mvp, projectionMatrix_, tmp);
         shader_->setColor(1.0f, 1.0f, 1.0f, 1.0f);
+        shader_->setModelMatrix(modelMatrix);
         shader_->setProjectionMatrix(mvp);
         shader_->drawModel(models_[1]);
 
@@ -539,6 +581,7 @@ void Renderer::render() {
 
             Utility::multiplyMatrices(addonTmp, viewMatrix, addonModelMatrix);
             Utility::multiplyMatrices(addonMvp, projectionMatrix_, addonTmp);
+            shader_->setModelMatrix(addonModelMatrix);
             shader_->setProjectionMatrix(addonMvp);
             shader_->drawModel(models_[modelIdx]);
         }
@@ -577,6 +620,7 @@ void Renderer::render() {
 
             Utility::multiplyMatrices(cargoTmp, viewMatrix, cargoModelMatrix);
             Utility::multiplyMatrices(cargoMvp, projectionMatrix_, cargoTmp);
+            shader_->setModelMatrix(cargoModelMatrix);
             shader_->setProjectionMatrix(cargoMvp);
             shader_->drawModel(models_[modelIdx]);
         }
@@ -589,9 +633,13 @@ void Renderer::render() {
             float mvp[16];
             float tmp[16];
 
+            shader_->setColor(1.0f, 1.0f, 1.0f, 1.0f);
+            shader_->setLightEnabled(areHeadlightsOn_ && gameState_ == GameState::GAMEPLAY);
+
             Utility::buildTranslationMatrix(modelMatrix, obs.x, 0.0f, obs.z);
             Utility::multiplyMatrices(tmp, viewMatrix, modelMatrix);
             Utility::multiplyMatrices(mvp, projectionMatrix_, tmp);
+            shader_->setModelMatrix(modelMatrix);
             shader_->setProjectionMatrix(mvp);
             shader_->drawModel(models_[2]);
         }
@@ -607,6 +655,7 @@ void Renderer::render() {
             Utility::buildTranslationMatrix(modelMatrix, cp.x, 0.0f, cp.z);
             Utility::multiplyMatrices(tmp, viewMatrix, modelMatrix);
             Utility::multiplyMatrices(mvp, projectionMatrix_, tmp);
+            shader_->setModelMatrix(modelMatrix);
             shader_->setProjectionMatrix(mvp);
 
             if (cp.reached) shader_->setColor(0.0f, 1.0f, 0.0f, 1.0f); // Green
@@ -618,12 +667,14 @@ void Renderer::render() {
             Utility::buildTranslationMatrix(modelMatrix, cp.x + 5.0f, 0.0f, cp.z);
             Utility::multiplyMatrices(tmp, viewMatrix, modelMatrix);
             Utility::multiplyMatrices(mvp, projectionMatrix_, tmp);
+            shader_->setModelMatrix(modelMatrix);
             shader_->setProjectionMatrix(mvp);
             shader_->drawModel(models_[12]);
 
             Utility::buildTranslationMatrix(modelMatrix, cp.x - 5.0f, 0.0f, cp.z);
             Utility::multiplyMatrices(tmp, viewMatrix, modelMatrix);
             Utility::multiplyMatrices(mvp, projectionMatrix_, tmp);
+            shader_->setModelMatrix(modelMatrix);
             shader_->setProjectionMatrix(mvp);
             shader_->drawModel(models_[12]);
         }
@@ -639,10 +690,63 @@ void Renderer::render() {
             Utility::buildTranslationMatrix(modelMatrix, station.x, 0.0f, station.z);
             Utility::multiplyMatrices(tmp, viewMatrix, modelMatrix);
             Utility::multiplyMatrices(mvp, projectionMatrix_, tmp);
+            shader_->setModelMatrix(modelMatrix);
             shader_->setProjectionMatrix(mvp);
             shader_->setColor(1.0f, 0.2f, 0.2f, 1.0f); // Red pump
             shader_->drawModel(models_[13]);
         }
+    }
+
+    // Render Light Cones (Visual Polish)
+    if (areHeadlightsOn_ && gameState_ == GameState::GAMEPLAY && models_.size() > 3) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE); // Additive blending for light
+        glDepthMask(GL_FALSE);
+        shader_->setLightParams(lightPos, lightDir, lightColor, false); // Disable shader lighting for the cone itself
+
+        for (int i = 0; i < 2; ++i) {
+            float modelMatrix[16];
+            float translation[16];
+            float rotY[16];
+            float rotX[16];
+            float scale[16];
+            float mvp[16];
+            float tmp[16];
+
+            float sideOffset = (i == 0) ? 0.4f : -0.4f;
+            // Position at front, slightly offset to sides for two beams
+            Utility::buildTranslationMatrix(translation,
+                carX_ + sinf(carRotation_) * 1.0f + cosf(carRotation_) * sideOffset,
+                0.8f + carY_,
+                carZ_ + cosf(carRotation_) * 1.0f - sinf(carRotation_) * sideOffset);
+
+            Utility::buildRotationYMatrix(rotY, carRotation_);
+            // Tilt cone down slightly and put in XZ plane (rotated from XY)
+            Utility::buildIdentityMatrix(rotX);
+            float p = carPitch_ + 0.1f + M_PI / 2.0f;
+            rotX[5] = cosf(p); rotX[6] = sinf(p); rotX[9] = -sinf(p); rotX[10] = cosf(p);
+
+            // Quad is -1 to 1 in XY. After 90deg X rotation, it's -1 to 1 in XZ.
+            // Move it so the "back" is at the headlight
+            float offsetForward[16];
+            Utility::buildTranslationMatrix(offsetForward, 0.0f, 0.0f, 1.0f);
+
+            Utility::buildScaleMatrix(scale, 0.5f, 1.0f, 4.0f); // 8 units long beam
+
+            Utility::multiplyMatrices(tmp, translation, rotY);
+            Utility::multiplyMatrices(modelMatrix, tmp, rotX);
+            Utility::multiplyMatrices(tmp, modelMatrix, offsetForward);
+            Utility::multiplyMatrices(modelMatrix, tmp, scale);
+
+            Utility::multiplyMatrices(tmp, viewMatrix, modelMatrix);
+            Utility::multiplyMatrices(mvp, projectionMatrix_, tmp);
+            shader_->setModelMatrix(modelMatrix);
+            shader_->setProjectionMatrix(mvp);
+            shader_->setColor(1.0f, 1.0f, 0.5f, 0.2f);
+            shader_->drawModel(models_[3]);
+        }
+        glDepthMask(GL_TRUE);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     }
 
     // Render Smoke Particles
@@ -650,6 +754,7 @@ void Renderer::render() {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDepthMask(GL_FALSE); // Don't write to depth buffer for particles
+        shader_->setLightParams(lightPos, lightDir, lightColor, false);
 
         for (const auto& p : particles_) {
             float modelMatrix[16];
@@ -664,6 +769,7 @@ void Renderer::render() {
 
             Utility::multiplyMatrices(tmp, viewMatrix, modelMatrix);
             Utility::multiplyMatrices(mvp, projectionMatrix_, tmp);
+            shader_->setModelMatrix(modelMatrix);
             shader_->setProjectionMatrix(mvp);
 
             float alpha = p.life / p.maxLife;
@@ -701,12 +807,14 @@ void Renderer::render() {
 
         Utility::multiplyMatrices(tmp, viewMatrix, modelMatrix);
         Utility::multiplyMatrices(mvp, projectionMatrix_, tmp);
+        shader_->setModelMatrix(modelMatrix);
         shader_->setProjectionMatrix(mvp);
         shader_->setColor(0.2f, 0.2f, 0.2f, 1.0f); // Dark grey cable
         shader_->drawModel(models_[3]); // Use UI quad model as a line/thin quad
     }
 
     // Render UI
+    shader_->setLightParams(lightPos, lightDir, lightColor, false);
     renderUI();
 
     // Present the rendered image. This is an implicit glFlush.
@@ -731,6 +839,7 @@ void Renderer::drawStyledButton(float x, float y, float w, float h, float r, flo
         modelMatrix[12] = qx;
         modelMatrix[13] = qy;
         Utility::multiplyMatrices(mvp, ortho, modelMatrix);
+        shader_->setModelMatrix(modelMatrix);
         shader_->setProjectionMatrix(mvp);
         shader_->setColor(qr, qg, qb, qa);
         shader_->drawModel(models_[3]);
@@ -760,6 +869,7 @@ void Renderer::drawProgressBar(float x, float y, float w, float h, float progres
         modelMatrix[12] = qx;
         modelMatrix[13] = qy;
         Utility::multiplyMatrices(mvp, ortho, modelMatrix);
+        shader_->setModelMatrix(modelMatrix);
         shader_->setProjectionMatrix(mvp);
         shader_->setColor(qr, qg, qb, qa);
         shader_->drawModel(models_[3]);
@@ -773,6 +883,9 @@ void Renderer::drawProgressBar(float x, float y, float w, float h, float progres
 
 void Renderer::renderUI() {
     if (models_.size() < 4) return;
+
+    // Ensure lighting is disabled for UI elements
+    shader_->setLightEnabled(false);
 
     glDisable(GL_DEPTH_TEST);
 
@@ -792,6 +905,7 @@ void Renderer::renderUI() {
         modelMatrix[12] = qx;
         modelMatrix[13] = qy;
         Utility::multiplyMatrices(mvp, ortho, modelMatrix);
+        shader_->setModelMatrix(modelMatrix);
         shader_->setProjectionMatrix(mvp);
         shader_->setColor(qr, qg, qb, qa);
         shader_->drawModel(models_[3]);
@@ -878,6 +992,14 @@ void Renderer::renderUI() {
                          vehicleState_.isTCEnabled ? 0.2f : 0.1f,
                          0.2f,
                          vehicleState_.isTCEnabled ? 0.9f : 0.1f, 1.0f, pressedButtonId_ == 3);
+
+        // Headlight
+        drawStyledButton(centerX + 360.0f, iconY, 70.0f, 70.0f,
+                         areHeadlightsOn_ ? 1.0f : 0.2f,
+                         areHeadlightsOn_ ? 1.0f : 0.2f,
+                         0.2f, 1.0f, pressedButtonId_ == 12);
+        // Headlight beam simulation
+        drawQuad(centerX + 360.0f, iconY, 30.0f, 30.0f, 1.0f, 1.0f, 1.0f, 0.8f);
 
         // Winch & Pull
         drawStyledButton(centerX - 240.0f, iconY, 70.0f, 70.0f, 0.4f, 0.4f, 0.4f, 1.0f, pressedButtonId_ == 4);
@@ -1035,15 +1157,13 @@ void Renderer::initRenderer() {
     PRINT_GL_STRING_AS_LIST(GL_EXTENSIONS);
 
     shader_ = std::unique_ptr<Shader>(
-            Shader::loadShader(vertex, fragment, "inPosition", "inUV", "uMVP", "uColor"));
+            Shader::loadShader(vertex, fragment, "inPosition", "inUV", "uMVP", "uColor",
+                               "uModel", "uLightPos", "uLightDir", "uLightColor", "uLightEnabled"));
     assert(shader_);
 
     // Note: there's only one shader in this demo, so I'll activate it here. For a more complex game
     // you'll want to track the active shader and activate/deactivate it as necessary
     shader_->activate();
-
-    // setup any other gl related global states
-    glClearColor(0.53f, 0.81f, 0.92f, 1.0f); // Sky Blue
 
     // enable alpha globally for now, you probably don't want to do this in a game
     glEnable(GL_BLEND);
@@ -1055,10 +1175,10 @@ void Renderer::initRenderer() {
 }
 
 void Renderer::updateRenderArea() {
-    EGLint width;
+    EGLint width = 0;
     eglQuerySurface(display_, surface_, EGL_WIDTH, &width);
 
-    EGLint height;
+    EGLint height = 0;
     eglQuerySurface(display_, surface_, EGL_HEIGHT, &height);
 
     if (width != width_ || height != height_) {
@@ -1345,6 +1465,10 @@ void Renderer::handleInput() {
                                     isWinching_ = !isWinching_;
                                     pressedButtonId_ = 5; buttonFeedbackTimer_ = 0.1f;
                                 }
+                            } else if (x > (float)width_ / 2.0f + 320.0f && x < (float)width_ / 2.0f + 400.0f) {
+                                // Headlight Button Tapped
+                                areHeadlightsOn_ = !areHeadlightsOn_;
+                                pressedButtonId_ = 12; buttonFeedbackTimer_ = 0.1f;
                             }
                         }
 

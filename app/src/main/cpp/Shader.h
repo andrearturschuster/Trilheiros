@@ -85,6 +85,7 @@ public:
     void setColor(float r, float g, float b, float a) const;
 
     void setLightParams(float *pos, float *dir, float *color, bool enabled) const;
+    void setLightEnabled(bool enabled) const;
 
 private:
     /*!
