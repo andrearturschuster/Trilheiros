@@ -139,9 +139,8 @@ void Shader::deactivate() const {
 }
 
 void Shader::drawModel(const Model &model) const {
-    // Force client-side arrays by unbinding any VBOs
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ARRAY_BUFFER, model.getVBO());
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.getIBO());
 
     // The position attribute is 3 floats
     glVertexAttribPointer(
@@ -150,7 +149,7 @@ void Shader::drawModel(const Model &model) const {
             GL_FLOAT, // of type float
             GL_FALSE, // don't normalize
             sizeof(Vertex), // stride is Vertex bytes
-            model.getVertexData() // pull from the start of the vertex data
+            nullptr // pull from the start of the vertex data (offset 0)
     );
     glEnableVertexAttribArray(position_);
 
@@ -161,7 +160,7 @@ void Shader::drawModel(const Model &model) const {
             GL_FLOAT, // of type float
             GL_FALSE, // don't normalize
             sizeof(Vertex), // stride is Vertex bytes
-            ((uint8_t *) model.getVertexData()) + sizeof(Vector3) // offset Vector3 from the start
+            (void*)sizeof(Vector3) // offset Vector3 from the start
     );
     glEnableVertexAttribArray(uv_);
 
@@ -170,10 +169,13 @@ void Shader::drawModel(const Model &model) const {
     glBindTexture(GL_TEXTURE_2D, model.getTexture().getTextureID());
 
     // Draw as indexed triangles
-    glDrawElements(GL_TRIANGLES, model.getIndexCount(), GL_UNSIGNED_SHORT, model.getIndexData());
+    glDrawElements(GL_TRIANGLES, model.getIndexCount(), GL_UNSIGNED_SHORT, nullptr);
 
     glDisableVertexAttribArray(uv_);
     glDisableVertexAttribArray(position_);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 }
 
 void Shader::setProjectionMatrix(float *projectionMatrix) const {

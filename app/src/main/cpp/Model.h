@@ -2,6 +2,7 @@
 #define ANDROIDGLINVESTIGATIONS_MODEL_H
 
 #include <vector>
+#include <GLES3/gl3.h>
 #include "TextureAsset.h"
 
 union Vector3 {
@@ -39,7 +40,58 @@ public:
             std::shared_ptr<TextureAsset> spTexture)
             : vertices_(std::move(vertices)),
               indices_(std::move(indices)),
-              spTexture_(std::move(spTexture)) {}
+              spTexture_(std::move(spTexture)),
+              vbo_(0),
+              ibo_(0) {}
+
+    inline ~Model() {
+        if (vbo_) glDeleteBuffers(1, &vbo_);
+        if (ibo_) glDeleteBuffers(1, &ibo_);
+    }
+
+    inline Model(Model&& other) noexcept
+            : vertices_(std::move(other.vertices_)),
+              indices_(std::move(other.indices_)),
+              spTexture_(std::move(other.spTexture_)),
+              vbo_(other.vbo_),
+              ibo_(other.ibo_) {
+        other.vbo_ = 0;
+        other.ibo_ = 0;
+    }
+
+    inline Model& operator=(Model&& other) noexcept {
+        if (this != &other) {
+            if (vbo_) glDeleteBuffers(1, &vbo_);
+            if (ibo_) glDeleteBuffers(1, &ibo_);
+            vertices_ = std::move(other.vertices_);
+            indices_ = std::move(other.indices_);
+            spTexture_ = std::move(other.spTexture_);
+            vbo_ = other.vbo_;
+            ibo_ = other.ibo_;
+            other.vbo_ = 0;
+            other.ibo_ = 0;
+        }
+        return *this;
+    }
+
+    Model(const Model&) = delete;
+    Model& operator=(const Model&) = delete;
+
+    void uploadToGPU() {
+        glGenBuffers(1, &vbo_);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+        glBufferData(GL_ARRAY_BUFFER, vertices_.size() * sizeof(Vertex), vertices_.data(), GL_STATIC_DRAW);
+
+        glGenBuffers(1, &ibo_);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo_);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices_.size() * sizeof(Index), indices_.data(), GL_STATIC_DRAW);
+
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    }
+
+    inline GLuint getVBO() const { return vbo_; }
+    inline GLuint getIBO() const { return ibo_; }
 
     inline const Vertex *getVertexData() const {
         return vertices_.data();
@@ -61,6 +113,7 @@ private:
     std::vector<Vertex> vertices_;
     std::vector<Index> indices_;
     std::shared_ptr<TextureAsset> spTexture_;
+    GLuint vbo_, ibo_;
 };
 
 #endif //ANDROIDGLINVESTIGATIONS_MODEL_H

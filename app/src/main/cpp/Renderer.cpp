@@ -62,7 +62,7 @@ void main() {
 
 // Fragment shader, you'd typically load this from assets
 static const char *fragment = R"fragment(#version 300 es
-precision mediump float;
+precision highp float;
 
 in vec2 fragUV;
 in vec3 fragPos;
@@ -79,18 +79,16 @@ out vec4 outColor;
 
 void main() {
     vec4 texColor = texture(uTexture, fragUV) * uColor;
-    if (!uLightEnabled) {
-        outColor = texColor;
-        return;
-    }
-    vec3 lightToFrag = normalize(fragPos - uLightPos);
-    float dist = length(fragPos - uLightPos);
-    float theta = dot(lightToFrag, normalize(uLightDir));
+    if (uLightEnabled) {
+        vec3 lightToFrag = normalize(fragPos - uLightPos);
+        float dist = length(fragPos - uLightPos);
+        float theta = dot(lightToFrag, normalize(uLightDir));
 
-    // Spotlight cone: roughly 30 degrees (cos(15) ~ 0.96)
-    if (theta > 0.96 && dist < 20.0) {
-        float intensity = smoothstep(0.95, 0.98, theta) * (1.0 - dist / 20.0);
-        texColor.rgb += uLightColor.rgb * intensity * uLightColor.a;
+        // Spotlight cone: roughly 30 degrees (cos(15) ~ 0.96)
+        if (theta > 0.96 && dist < 20.0) {
+            float intensity = smoothstep(0.95, 0.98, theta) * (1.0 - dist / 20.0);
+            texColor.rgb += uLightColor.rgb * intensity * uLightColor.a;
+        }
     }
     outColor = texColor;
 }
@@ -113,271 +111,274 @@ Renderer::~Renderer() {
 }
 
 void Renderer::update() {
-    if (gameState_ != GameState::GAMEPLAY) return;
-
     float dt = 1.0f / 60.0f; // Simplified fixed delta time
 
-    // Transmission logic
-    float gearRatio = 0.0f;
-    if (vehicleState_.currentGear == -1) {
-        gearRatio = currentVehicle_.gearRatios[0];
-    } else if (vehicleState_.currentGear > 0) {
-        // gearRatios[2] is 1st gear
-        gearRatio = currentVehicle_.gearRatios[vehicleState_.currentGear + 1];
-    }
-
-    float targetAccel = acceleratorValue_;
-    if (isDamageEnabled_ && vehicleHealth_ <= 0.0f) {
-        targetAccel = 0.0f;
-        carSpeed_ = 0.0f;
-    }
-
-    // Fuel Logic
-    if (currentFuel_ > 0.0f) {
-        float consumption = (vehicleState_.rpm / 7000.0f) * currentVehicle_.fuelConsumptionRate * (0.5f + fabsf(acceleratorValue_) * 0.5f) * dt;
-        currentFuel_ -= consumption;
-        if (currentFuel_ < 0.0f) currentFuel_ = 0.0f;
-    } else {
-        targetAccel = 0.0f;
-        carSpeed_ *= 0.95f; // Coasting to a stop
-    }
-
-    // Refueling Logic
-    for (const auto& station : fuelStations_) {
-        float dx = carX_ - station.x;
-        float dz = carZ_ - station.z;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (dist < station.radius && fabsf(carSpeed_) < 0.5f) {
-            if (currentFuel_ < fuelCapacity_) {
-                float refillAmount = 5.0f * dt;
-                if (currentFuel_ + refillAmount > fuelCapacity_) refillAmount = fuelCapacity_ - currentFuel_;
-                currentFuel_ += refillAmount;
-                playerMoney_ -= (long)(refillAmount * 2.0f); // $2 per fuel unit
-                if (playerMoney_ < 0) playerMoney_ = 0;
-            }
+    if (gameState_ == GameState::GAMEPLAY) {
+        // Transmission logic
+        float gearRatio = 0.0f;
+        if (vehicleState_.currentGear == -1) {
+            gearRatio = currentVehicle_.gearRatios[0];
+        } else if (vehicleState_.currentGear > 0) {
+            // gearRatios[2] is 1st gear
+            gearRatio = currentVehicle_.gearRatios[vehicleState_.currentGear + 1];
         }
-    }
 
-    // Traction Control: limit accelerator if wheel spin would occur
-    if (vehicleState_.isTCEnabled && acceleratorValue_ > 0.1f) {
-        float maxAllowedAccel = 0.4f + fabsf(carSpeed_) * 0.05f;
-        if (targetAccel > maxAllowedAccel) {
-            targetAccel = maxAllowedAccel;
+        float targetAccel = acceleratorValue_;
+        if (isDamageEnabled_ && vehicleHealth_ <= 0.0f) {
+            targetAccel = 0.0f;
+            carSpeed_ = 0.0f;
         }
-    }
 
-    // Physics: Force = Mass * Acceleration => Accel = Force / Mass
-    // Here we treat Torque * targetAccel * gearRatio as a force-like value.
-    float totalWeight = currentVehicle_.weight;
-    if (currentVehicle_.currentAddonIndex != -1) {
-        totalWeight += addonCatalog_[currentVehicle_.currentAddonIndex].weightImpact;
-    }
-    totalWeight += currentCargo_.weight;
-
-    float force = currentVehicle_.engineTorque * targetAccel * gearRatio * 50.0f;
-    float acceleration = force / totalWeight;
-
-    // Mud Logic
-    float mudFriction = 0.0f;
-    bool inMud = false;
-    for (const auto& mud : mudZones_) {
-        float dx = carX_ - mud.x;
-        float dz = carZ_ - mud.z;
-        float dist = sqrtf(dx * dx + dz * dz);
-        if (dist < mud.radius) {
-            mudFriction = mud.friction;
-            inMud = true;
-            break;
-        }
-    }
-
-    if (inMud) {
-        float penalty = mudFriction;
-        if (vehicleState_.is4x4Enabled) penalty *= 0.5f;
-        acceleration *= (1.0f - penalty);
-    }
-
-    // 4x4 Grip bonus: better acceleration
-    if (vehicleState_.is4x4Enabled) {
-        acceleration *= 1.5f;
-    }
-
-    if (vehicleState_.currentGear != 0) {
-        carSpeed_ += acceleration * dt;
-    } else {
-        carSpeed_ *= 0.95f; // Neutral friction/rolling resistance
-    }
-
-    // Stuck logic: if in mud, very slow and low torque, stop
-    if (inMud && fabsf(carSpeed_) < 0.2f && acceleration < 0.1f) {
-        carSpeed_ = 0.0f;
-    }
-
-    // Speed limiting based on gear ratio
-    float maxSpeed = (gearRatio != 0.0f) ? (30.0f / fabsf(gearRatio)) : 0.0f;
-    if (carSpeed_ > maxSpeed) carSpeed_ = maxSpeed;
-    if (carSpeed_ < -maxSpeed) carSpeed_ = -maxSpeed;
-
-    // Slope/Gravity Logic
-    carY_ = 0.0f;
-    carPitch_ = 0.0f;
-    for (const auto& slope : slopeZones_) {
-        float halfW = slope.width / 2.0f;
-        float halfL = slope.length / 2.0f;
-        if (carX_ > slope.x - halfW && carX_ < slope.x + halfW &&
-            carZ_ > slope.z - halfL && carZ_ < slope.z + halfL) {
-
-            float progress = (carZ_ - (slope.z - halfL)) / slope.length;
-            carY_ = progress * slope.heightDelta;
-
-            float angle = atan2f(slope.heightDelta, slope.length);
-            carPitch_ = -angle;
-
-            // Gravity: subtract if going up (carSpeed_ > 0), add if going down
-            float gravityEffect = 5.0f * sinf(angle) * (totalWeight / 2000.0f);
-            carSpeed_ -= gravityEffect * dt;
-        }
-    }
-
-    // Natural deceleration (Drag proportional to speed and weight)
-    carSpeed_ *= (0.99f - (totalWeight / 100000.0f));
-
-    // RPM simulation
-    if (gearRatio != 0.0f) {
-        vehicleState_.rpm = fabsf(carSpeed_ * gearRatio * 300.0f) + 800.0f;
-    } else {
-        vehicleState_.rpm = fabsf(acceleratorValue_ * 5000.0f) + 800.0f;
-    }
-    if (vehicleState_.rpm > 7000.0f) vehicleState_.rpm = 7000.0f;
-
-    // RPM Damage logic
-    if (isDamageEnabled_) {
-        if (vehicleState_.rpm > 6800.0f) {
-            rpmOverLimitDuration_ += dt;
-            if (rpmOverLimitDuration_ > 1.0f) {
-                vehicleHealth_ -= 5.0f * dt; // Continuous damage after 1s
-            }
+        // Fuel Logic
+        if (currentFuel_ > 0.0f) {
+            float consumption = (vehicleState_.rpm / 7000.0f) * currentVehicle_.fuelConsumptionRate * (0.5f + fabsf(acceleratorValue_) * 0.5f) * dt;
+            currentFuel_ -= consumption;
+            if (currentFuel_ < 0.0f) currentFuel_ = 0.0f;
         } else {
-            rpmOverLimitDuration_ = 0.0f;
+            targetAccel = 0.0f;
+            carSpeed_ *= 0.95f; // Coasting to a stop
         }
+
+        // Refueling Logic
+        for (const auto& station : fuelStations_) {
+            float dx = carX_ - station.x;
+            float dz = carZ_ - station.z;
+            float dist = sqrtf(dx * dx + dz * dz);
+            if (dist < station.radius && fabsf(carSpeed_) < 0.5f) {
+                if (currentFuel_ < fuelCapacity_) {
+                    float refillAmount = 5.0f * dt;
+                    if (currentFuel_ + refillAmount > fuelCapacity_) refillAmount = fuelCapacity_ - currentFuel_;
+                    currentFuel_ += refillAmount;
+                    playerMoney_ -= (long)(refillAmount * 2.0f); // $2 per fuel unit
+                    if (playerMoney_ < 0) playerMoney_ = 0;
+                }
+            }
+        }
+
+        // Traction Control: limit accelerator if wheel spin would occur
+        if (vehicleState_.isTCEnabled && acceleratorValue_ > 0.1f) {
+            float maxAllowedAccel = 0.4f + fabsf(carSpeed_) * 0.05f;
+            if (targetAccel > maxAllowedAccel) {
+                targetAccel = maxAllowedAccel;
+            }
+        }
+
+        // Physics: Force = Mass * Acceleration => Accel = Force / Mass
+        // Here we treat Torque * targetAccel * gearRatio as a force-like value.
+        float totalWeight = currentVehicle_.weight;
+        if (currentVehicle_.currentAddonIndex != -1) {
+            totalWeight += addonCatalog_[currentVehicle_.currentAddonIndex].weightImpact;
+        }
+        totalWeight += currentCargo_.weight;
+
+        float force = currentVehicle_.engineTorque * targetAccel * gearRatio * 50.0f;
+        float acceleration = force / totalWeight;
+
+        // Mud Logic
+        float mudFriction = 0.0f;
+        bool inMud = false;
+        for (const auto& mud : mudZones_) {
+            float dx = carX_ - mud.x;
+            float dz = carZ_ - mud.z;
+            float dist = sqrtf(dx * dx + dz * dz);
+            if (dist < mud.radius) {
+                mudFriction = mud.friction;
+                inMud = true;
+                break;
+            }
+        }
+
+        if (inMud) {
+            float penalty = mudFriction;
+            if (vehicleState_.is4x4Enabled) penalty *= 0.5f;
+            acceleration *= (1.0f - penalty);
+        }
+
+        // 4x4 Grip bonus: better acceleration
+        if (vehicleState_.is4x4Enabled) {
+            acceleration *= 1.5f;
+        }
+
+        if (vehicleState_.currentGear != 0) {
+            carSpeed_ += acceleration * dt;
+        } else {
+            carSpeed_ *= 0.95f; // Neutral friction/rolling resistance
+        }
+
+        // Stuck logic: if in mud, very slow and low torque, stop
+        if (inMud && fabsf(carSpeed_) < 0.2f && acceleration < 0.1f) {
+            carSpeed_ = 0.0f;
+        }
+
+        // Speed limiting based on gear ratio
+        float maxSpeed = (gearRatio != 0.0f) ? (30.0f / fabsf(gearRatio)) : 0.0f;
+        if (carSpeed_ > maxSpeed) carSpeed_ = maxSpeed;
+        if (carSpeed_ < -maxSpeed) carSpeed_ = -maxSpeed;
+
+        // Slope/Gravity Logic
+        carY_ = 0.0f;
+        carPitch_ = 0.0f;
+        for (const auto& slope : slopeZones_) {
+            float halfW = slope.width / 2.0f;
+            float halfL = slope.length / 2.0f;
+            if (carX_ > slope.x - halfW && carX_ < slope.x + halfW &&
+                carZ_ > slope.z - halfL && carZ_ < slope.z + halfL) {
+
+                float progress = (carZ_ - (slope.z - halfL)) / slope.length;
+                carY_ = progress * slope.heightDelta;
+
+                float angle = atan2f(slope.heightDelta, slope.length);
+                carPitch_ = -angle;
+
+                // Gravity: subtract if going up (carSpeed_ > 0), add if going down
+                float gravityEffect = 5.0f * sinf(angle) * (totalWeight / 2000.0f);
+                carSpeed_ -= gravityEffect * dt;
+            }
+        }
+
+        // Natural deceleration (Drag proportional to speed and weight)
+        carSpeed_ *= (0.99f - (totalWeight / 100000.0f));
+
+        // RPM simulation
+        if (gearRatio != 0.0f) {
+            vehicleState_.rpm = fabsf(carSpeed_ * gearRatio * 300.0f) + 800.0f;
+        } else {
+            vehicleState_.rpm = fabsf(acceleratorValue_ * 5000.0f) + 800.0f;
+        }
+        if (vehicleState_.rpm > 7000.0f) vehicleState_.rpm = 7000.0f;
+
+        // RPM Damage logic
+        if (isDamageEnabled_) {
+            if (vehicleState_.rpm > 6800.0f) {
+                rpmOverLimitDuration_ += dt;
+                if (rpmOverLimitDuration_ > 1.0f) {
+                    vehicleHealth_ -= 5.0f * dt; // Continuous damage after 1s
+                }
+            } else {
+                rpmOverLimitDuration_ = 0.0f;
+            }
+        }
+
+        float currentSteer = steer_;
+        if (useTilt_) {
+            // Normalize tilt: accelerometer Y is typically around -9.8 to 9.8
+            // Let's say 5.0 is full turn
+            currentSteer = -tilt_ / 5.0f;
+            if (currentSteer > 1.0f) currentSteer = 1.0f;
+            if (currentSteer < -1.0f) currentSteer = -1.0f;
+        }
+
+        // Heavier vehicles turn slower
+        float weightFactor = 1500.0f / totalWeight;
+        float rotationStep = currentSteer * carSpeed_ * 0.1f * weightFactor;
+        // Diff Lock: reduces turning speed due to locked axles fighting
+        if (vehicleState_.isDiffLockEnabled) {
+            rotationStep *= 0.5f;
+        }
+
+        carRotation_ += rotationStep * dt;
+
+        carX_ += sinf(carRotation_) * carSpeed_ * dt;
+        carZ_ += cosf(carRotation_) * carSpeed_ * dt;
+
+        // Winch Logic
+        if (isWinchAttached_ && winchAnchorIndex_ >= 0 && winchAnchorIndex_ < obstacles_.size()) {
+            const auto& anchor = obstacles_[winchAnchorIndex_];
+            float dx = anchor.x - carX_;
+            float dz = anchor.z - carZ_;
+            float dist = sqrtf(dx * dx + dz * dz);
+
+            // Auto-detach if too far
+            if (dist > maxWinchDistance_ + 2.0f) {
+                isWinchAttached_ = false;
+                isWinching_ = false;
+                winchAnchorIndex_ = -1;
+            }
+
+            if (isWinching_) {
+                // Apply pulling force towards anchor
+                float pullStrength = 2.0f; // Speed of winching
+                if (dist > 0.5f) { // Don't pull if already at anchor
+                    carX_ += (dx / dist) * pullStrength * dt;
+                    carZ_ += (dz / dist) * pullStrength * dt;
+                    // Also give a slight speed boost in that direction to overcome friction
+                    carSpeed_ += 0.5f * dt;
+                }
+            }
+        }
+
+        // Boundary check (50x50 ground)
+        if (carX_ > 48.0f) carX_ = 48.0f;
+        if (carX_ < -48.0f) carX_ = -48.0f;
+        if (carZ_ > 48.0f) carZ_ = 48.0f;
+        if (carZ_ < -48.0f) carZ_ = -48.0f;
+
+        // Goal Check: If carZ > 45.0, finish mission
+        if (carZ_ > 45.0f) {
+            float cargoBonus = (currentCargo_.type != CargoType::NONE) ? (static_cast<float>(currentCargo_.value) * (currentCargo_.health / 100.0f)) : 0.0f;
+            playerMoney_ += 500 + static_cast<int>(cargoBonus);
+            saveGame();
+            gameState_ = GameState::SHOP;
+            resetVehicle();
+            return;
+        }
+
+        // Checkpoints Check
+        for (auto& cp : checkpoints_) {
+            if (!cp.reached && carZ_ > cp.z) {
+                cp.reached = true;
+                lastCheckpointX_ = carX_;
+                lastCheckpointY_ = carY_;
+                lastCheckpointZ_ = carZ_;
+                lastCheckpointRotation_ = carRotation_;
+                hasReachedAnyCheckpoint_ = true;
+                playerMoney_ += 100;
+                saveGame();
+            }
+        }
+
+        // Collision detection
+        for (const auto& obs : obstacles_) {
+            float dx = carX_ - obs.x;
+            float dz = carZ_ - obs.z;
+            float distSq = dx*dx + dz*dz;
+            if (distSq < 1.0f) { // Collision radius 1.0
+                carSpeed_ = 0.0f;
+                if (isDamageEnabled_) {
+                    vehicleHealth_ -= 20.0f;
+                    if (currentCargo_.type != CargoType::NONE) {
+                        currentCargo_.health -= 15.0f * currentCargo_.fragility;
+                        if (currentCargo_.health <= 0.0f) {
+                            currentCargo_.health = 0.0f;
+                            gameState_ = GameState::SHOP; // Fail mission
+                            resetVehicle();
+                            return;
+                        }
+                    }
+                }
+                // Push back slightly
+                carX_ -= sinf(carRotation_) * 0.2f;
+                carZ_ -= cosf(carRotation_) * 0.2f;
+                break;
+            }
+        }
+    } else {
+        // Shop mode: keep car fixed or at origin
+        carX_ = 0.0f; carY_ = 0.0f; carZ_ = 0.0f; carRotation_ = 0.0f;
     }
-
-    float currentSteer = steer_;
-    if (useTilt_) {
-        // Normalize tilt: accelerometer Y is typically around -9.8 to 9.8
-        // Let's say 5.0 is full turn
-        currentSteer = -tilt_ / 5.0f;
-        if (currentSteer > 1.0f) currentSteer = 1.0f;
-        if (currentSteer < -1.0f) currentSteer = -1.0f;
-    }
-
-    // Heavier vehicles turn slower
-    float weightFactor = 1500.0f / totalWeight;
-    float rotationStep = currentSteer * carSpeed_ * 0.1f * weightFactor;
-    // Diff Lock: reduces turning speed due to locked axles fighting
-    if (vehicleState_.isDiffLockEnabled) {
-        rotationStep *= 0.5f;
-    }
-
-    carRotation_ += rotationStep * dt;
-
-    carX_ += sinf(carRotation_) * carSpeed_ * dt;
-    carZ_ += cosf(carRotation_) * carSpeed_ * dt;
 
     if (buttonFeedbackTimer_ > 0.0f) {
         buttonFeedbackTimer_ -= dt;
         if (buttonFeedbackTimer_ <= 0.0f) pressedButtonId_ = -1;
     }
 
-    // Winch Logic
-    if (isWinchAttached_ && winchAnchorIndex_ >= 0 && winchAnchorIndex_ < obstacles_.size()) {
-        const auto& anchor = obstacles_[winchAnchorIndex_];
-        float dx = anchor.x - carX_;
-        float dz = anchor.z - carZ_;
-        float dist = sqrtf(dx * dx + dz * dz);
-
-        // Auto-detach if too far
-        if (dist > maxWinchDistance_ + 2.0f) {
-            isWinchAttached_ = false;
-            isWinching_ = false;
-            winchAnchorIndex_ = -1;
-        }
-
-        if (isWinching_) {
-            // Apply pulling force towards anchor
-            float pullStrength = 2.0f; // Speed of winching
-            if (dist > 0.5f) { // Don't pull if already at anchor
-                carX_ += (dx / dist) * pullStrength * dt;
-                carZ_ += (dz / dist) * pullStrength * dt;
-                // Also give a slight speed boost in that direction to overcome friction
-                carSpeed_ += 0.5f * dt;
-            }
-        }
-    }
-
-    // Boundary check (50x50 ground)
-    if (carX_ > 48.0f) carX_ = 48.0f;
-    if (carX_ < -48.0f) carX_ = -48.0f;
-    if (carZ_ > 48.0f) carZ_ = 48.0f;
-    if (carZ_ < -48.0f) carZ_ = -48.0f;
-
-    // Goal Check: If carZ > 45.0, finish mission
-    if (carZ_ > 45.0f) {
-        float cargoBonus = (currentCargo_.type != CargoType::NONE) ? (currentCargo_.value * (currentCargo_.health / 100.0f)) : 0.0f;
-        playerMoney_ += 500 + (int)cargoBonus;
-        saveGame();
-        gameState_ = GameState::SHOP;
-        resetVehicle();
-        return;
-    }
-
-    // Checkpoints Check
-    for (auto& cp : checkpoints_) {
-        if (!cp.reached && carZ_ > cp.z) {
-            cp.reached = true;
-            lastCheckpointX_ = carX_;
-            lastCheckpointY_ = carY_;
-            lastCheckpointZ_ = carZ_;
-            lastCheckpointRotation_ = carRotation_;
-            hasReachedAnyCheckpoint_ = true;
-            playerMoney_ += 100;
-            saveGame();
-        }
-    }
-
-    // Collision detection
-    for (const auto& obs : obstacles_) {
-        float dx = carX_ - obs.x;
-        float dz = carZ_ - obs.z;
-        float distSq = dx*dx + dz*dz;
-        if (distSq < 1.0f) { // Collision radius 1.0
-            carSpeed_ = 0.0f;
-            if (isDamageEnabled_) {
-                vehicleHealth_ -= 20.0f;
-                if (currentCargo_.type != CargoType::NONE) {
-                    currentCargo_.health -= 15.0f * currentCargo_.fragility;
-                    if (currentCargo_.health <= 0.0f) {
-                        currentCargo_.health = 0.0f;
-                        gameState_ = GameState::SHOP; // Fail mission
-                        resetVehicle();
-                        return;
-                    }
-                }
-            }
-            // Push back slightly
-            carX_ -= sinf(carRotation_) * 0.2f;
-            carZ_ -= cosf(carRotation_) * 0.2f;
-            break;
-        }
-    }
-
-    // Simple camera follow
+    // Camera follow (always update so car is visible in SHOP and GAMEPLAY)
     camX_ = carX_ - sinf(carRotation_) * 8.0f;
     camZ_ = carZ_ - cosf(carRotation_) * 8.0f;
     camY_ = 4.0f + carY_;
 
     // Smoke Particle Logic
-    if (isDamageEnabled_ && vehicleHealth_ < 50.0f) {
+    if (isDamageEnabled_ && vehicleHealth_ < 50.0f && gameState_ == GameState::GAMEPLAY) {
         smokeSpawnTimer_++;
         // As health gets lower, spawn rate increases (threshold decreases)
         int spawnThreshold = (int)(vehicleHealth_ / 5.0f); // 50 health -> every 10 frames, 10 health -> every 2 frames
@@ -414,12 +415,17 @@ void Renderer::update() {
 }
 
 void Renderer::render() {
+    if (display_ == EGL_NO_DISPLAY || surface_ == EGL_NO_SURFACE) return;
+
     // Check to see if the surface has changed size. This is _necessary_ to do every frame when
     // using immersive mode as you'll get no other notification that your renderable area has
     // changed.
     updateRenderArea();
 
     if (width_ <= 0 || height_ <= 0) return;
+
+    // Ensure shader is active at start of frame
+    shader_->activate();
 
     // When the renderable area changes, the projection matrix has to also be updated. This is true
     // even if you change from the sample orthographic projection matrix as your aspect ratio has
@@ -428,7 +434,7 @@ void Renderer::render() {
         Utility::buildPerspectiveMatrix(
                 projectionMatrix_,
                 45.f,
-                float(width_) / height_,
+                static_cast<float>(width_) / static_cast<float>(height_),
                 0.1f,
                 100.f);
 
@@ -436,12 +442,18 @@ void Renderer::render() {
         shaderNeedsNewProjectionMatrix_ = false;
     }
 
-    // clear the color buffer
+    // clear the color and depth buffer
     glClearColor(0.53f, 0.81f, 0.92f, 1.0f); // Sky Blue
+    glClearDepthf(1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
 
     shader_->setColor(1.0f, 1.0f, 1.0f, 1.0f);
+
+    // Initial Identity for uModel
+    float identity[16];
+    Utility::buildIdentityMatrix(identity);
+    shader_->setModelMatrix(identity);
 
     // Headlight logic
     float lightPos[3] = { carX_ + sinf(carRotation_) * 1.0f, 0.8f + carY_, carZ_ + cosf(carRotation_) * 1.0f };
@@ -830,6 +842,9 @@ void Renderer::drawStyledButton(float x, float y, float w, float h, float r, flo
     ortho[12] = -1.0f;
     ortho[13] = 1.0f;
 
+    float identity[16];
+    Utility::buildIdentityMatrix(identity);
+
     auto drawQuad = [&](float qx, float qy, float qw, float qh, float qr, float qg, float qb, float qa) {
         float modelMatrix[16];
         float mvp[16];
@@ -839,7 +854,7 @@ void Renderer::drawStyledButton(float x, float y, float w, float h, float r, flo
         modelMatrix[12] = qx;
         modelMatrix[13] = qy;
         Utility::multiplyMatrices(mvp, ortho, modelMatrix);
-        shader_->setModelMatrix(modelMatrix);
+        shader_->setModelMatrix(identity); // Explicit Identity for fragPos consistency
         shader_->setProjectionMatrix(mvp);
         shader_->setColor(qr, qg, qb, qa);
         shader_->drawModel(models_[3]);
@@ -860,6 +875,9 @@ void Renderer::drawProgressBar(float x, float y, float w, float h, float progres
     ortho[12] = -1.0f;
     ortho[13] = 1.0f;
 
+    float identity[16];
+    Utility::buildIdentityMatrix(identity);
+
     auto drawQuad = [&](float qx, float qy, float qw, float qh, float qr, float qg, float qb, float qa) {
         float modelMatrix[16];
         float mvp[16];
@@ -869,7 +887,7 @@ void Renderer::drawProgressBar(float x, float y, float w, float h, float progres
         modelMatrix[12] = qx;
         modelMatrix[13] = qy;
         Utility::multiplyMatrices(mvp, ortho, modelMatrix);
-        shader_->setModelMatrix(modelMatrix);
+        shader_->setModelMatrix(identity); // Explicit Identity for fragPos consistency
         shader_->setProjectionMatrix(mvp);
         shader_->setColor(qr, qg, qb, qa);
         shader_->drawModel(models_[3]);
@@ -886,6 +904,10 @@ void Renderer::renderUI() {
 
     // Ensure lighting is disabled for UI elements
     shader_->setLightEnabled(false);
+
+    float identity[16];
+    Utility::buildIdentityMatrix(identity);
+    shader_->setModelMatrix(identity); // Explicit Identity for UI
 
     glDisable(GL_DEPTH_TEST);
 
@@ -905,7 +927,7 @@ void Renderer::renderUI() {
         modelMatrix[12] = qx;
         modelMatrix[13] = qy;
         Utility::multiplyMatrices(mvp, ortho, modelMatrix);
-        shader_->setModelMatrix(modelMatrix);
+        shader_->setModelMatrix(identity); // Explicit Identity
         shader_->setProjectionMatrix(mvp);
         shader_->setColor(qr, qg, qb, qa);
         shader_->drawModel(models_[3]);
@@ -949,7 +971,7 @@ void Renderer::renderUI() {
 
         // Fuel Bar (Below Health)
         float fuelNorm = currentFuel_ / fuelCapacity_;
-        float fuelR = (fuelNorm < 0.2f) ? 1.0f : 1.0f;
+        float fuelR = (fuelNorm < 0.2f) ? 1.0f : 0.0f;
         float fuelG = (fuelNorm < 0.2f) ? 0.0f : 0.8f;
         drawProgressBar((float)width_ - 150.0f, 70.0f, 200.0f, 20.0f, fuelNorm, fuelR, fuelG, 0.0f);
 
@@ -1133,6 +1155,7 @@ void Renderer::initRenderer() {
     // create the proper window surface
     EGLint format;
     eglGetConfigAttrib(display, config, EGL_NATIVE_VISUAL_ID, &format);
+    ANativeWindow_setBuffersGeometry(app_->window, 0, 0, format);
     EGLSurface surface = eglCreateWindowSurface(display, config, app_->window, nullptr);
 
     // Create a GLES 3 context
@@ -1181,7 +1204,7 @@ void Renderer::updateRenderArea() {
     EGLint height = 0;
     eglQuerySurface(display_, surface_, EGL_HEIGHT, &height);
 
-    if (width != width_ || height != height_) {
+    if (width > 0 && height > 0 && (width != width_ || height != height_)) {
         width_ = width;
         height_ = height;
         glViewport(0, 0, width, height);
@@ -1193,8 +1216,12 @@ void Renderer::updateRenderArea() {
 
 void Renderer::createModels() {
     auto assetManager = app_->activity->assetManager;
-    // Suggestion: Load "grass.png" here for the ground if available
-    auto spTexture = TextureAsset::loadAsset(assetManager, "android_robot.png");
+    // Usamos uma textura branca opaca (1x1) em vez do robô do Android:
+    // o robô tem fundo transparente e "apaga" a maior parte de cada quad
+    // (chão, carro, barras de UI) por causa do alpha=0 nas bordas.
+    // Com branco opaco, texture()*uColor vira só uColor, e as cores sólidas
+    // definidas pelo jogo (setColor) aparecem corretamente.
+    auto spTexture = TextureAsset::loadAsset(assetManager, "white.png");
 
     std::vector<Index> indices = {
             0, 1, 2, 0, 2, 3
@@ -1208,6 +1235,7 @@ void Renderer::createModels() {
             Vertex(Vector3{50.f, 0.f, -50.f}, Vector2{0.f, 20.f})
     };
     models_.emplace_back(groundVertices, indices, spTexture);
+    models_.back().uploadToGPU();
 
     // Model 1: Car
     std::vector<Vertex> carVertices = {
@@ -1217,6 +1245,7 @@ void Renderer::createModels() {
             Vertex(Vector3{0.5f, 0.f, -1.f}, Vector2{0.f, 1.f})
     };
     models_.emplace_back(carVertices, indices, spTexture);
+    models_.back().uploadToGPU();
 
     // Model 2: Tree (Crossing Quads)
     std::vector<Vertex> treeVertices = {
@@ -1236,6 +1265,7 @@ void Renderer::createModels() {
             4, 5, 6, 4, 6, 7
     };
     models_.emplace_back(treeVertices, treeIndices, spTexture);
+    models_.back().uploadToGPU();
 
     // Generate random obstacles
     for (int i = 0; i < 30; ++i) {
@@ -1255,6 +1285,7 @@ void Renderer::createModels() {
             Vertex(Vector3{-1.f, 1.f, 0.f}, Vector2{0.f, 1.f})
     };
     models_.emplace_back(uiVertices, indices, spTexture);
+    models_.back().uploadToGPU();
 
     // Model 4: Roof Rack (Small quad on top)
     std::vector<Vertex> roofRackVertices = {
@@ -1264,6 +1295,7 @@ void Renderer::createModels() {
             Vertex(Vector3{0.4f, 0.f, -0.4f}, Vector2{0.f, 1.f})
     };
     models_.emplace_back(roofRackVertices, indices, spTexture);
+    models_.back().uploadToGPU();
 
     // Model 5: Trailer (Quad with hitch offset)
     std::vector<Vertex> trailerVertices = {
@@ -1273,6 +1305,7 @@ void Renderer::createModels() {
             Vertex(Vector3{0.6f, 0.f, -1.0f}, Vector2{0.f, 1.f})
     };
     models_.emplace_back(trailerVertices, indices, spTexture);
+    models_.back().uploadToGPU();
 
     // Model 6: Box (Small cube-like)
     std::vector<Vertex> boxVertices = {
@@ -1288,6 +1321,7 @@ void Renderer::createModels() {
     };
     std::vector<Index> cubeIndices = { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
     models_.emplace_back(boxVertices, cubeIndices, spTexture);
+    models_.back().uploadToGPU();
 
     // Model 7: Barrel (Cylinder-ish)
     std::vector<Vertex> barrelVertices = {
@@ -1302,6 +1336,7 @@ void Renderer::createModels() {
             Vertex(Vector3{0.0f, 0.8f, 0.3f}, Vector2{0.0f, 1.0f})
     };
     models_.emplace_back(barrelVertices, cubeIndices, spTexture);
+    models_.back().uploadToGPU();
 
     // Model 8: Logs (Long cylinders)
     std::vector<Vertex> logVertices = {
@@ -1316,6 +1351,7 @@ void Renderer::createModels() {
             Vertex(Vector3{0.8f, 0.6f, -0.2f}, Vector2{0.0f, 1.0f})
     };
     models_.emplace_back(logVertices, cubeIndices, spTexture);
+    models_.back().uploadToGPU();
 
     // Model 9: Container (Large box)
     std::vector<Vertex> containerVertices = {
@@ -1330,6 +1366,7 @@ void Renderer::createModels() {
             Vertex(Vector3{0.6f, 1.2f, -1.5f}, Vector2{0.0f, 1.0f})
     };
     models_.emplace_back(containerVertices, cubeIndices, spTexture);
+    models_.back().uploadToGPU();
 
     // Model 10: Mud Zone (Flat quad slightly above ground)
     std::vector<Vertex> mudVertices = {
@@ -1339,6 +1376,7 @@ void Renderer::createModels() {
             Vertex(Vector3{1.0f, 0.01f, -1.0f}, Vector2{0.0f, 1.0f})
     };
     models_.emplace_back(mudVertices, indices, spTexture);
+    models_.back().uploadToGPU();
 
     // Model 11: Ramp (Sloped quad)
     std::vector<Vertex> rampVertices = {
@@ -1348,6 +1386,7 @@ void Renderer::createModels() {
             Vertex(Vector3{1.0f, 0.0f, -1.0f}, Vector2{0.0f, 1.0f})  // Bottom Back
     };
     models_.emplace_back(rampVertices, indices, spTexture);
+    models_.back().uploadToGPU();
 
     // Model 12: Checkpoint (Thin tall quad)
     std::vector<Vertex> cpVertices = {
@@ -1357,6 +1396,7 @@ void Renderer::createModels() {
             Vertex(Vector3{0.1f, 4.0f, 0.0f}, Vector2{0.0f, 1.0f})
     };
     models_.emplace_back(cpVertices, indices, spTexture);
+    models_.back().uploadToGPU();
 
     // Model 13: Fuel Pump (Box/Quad)
     std::vector<Vertex> pumpVertices = {
@@ -1371,6 +1411,7 @@ void Renderer::createModels() {
             Vertex(Vector3{0.4f, 1.5f, -0.4f}, Vector2{0.0f, 1.0f})
     };
     models_.emplace_back(pumpVertices, cubeIndices, spTexture);
+    models_.back().uploadToGPU();
 }
 
 void Renderer::handleInput() {
@@ -1552,6 +1593,17 @@ void Renderer::handleInput() {
                             }
                         }
                     }
+                }
+            }
+        } else if (action == AMOTION_EVENT_ACTION_UP || action == AMOTION_EVENT_ACTION_CANCEL || action == AMOTION_EVENT_ACTION_POINTER_UP) {
+            int pointerIndex = (motionEvent.action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+            auto &pointer = motionEvent.pointers[pointerIndex];
+            auto x = GameActivityPointerAxes_getX(&pointer);
+
+            if (gameState_ == GameState::GAMEPLAY) {
+                // If the pointer released was in the accelerator area, reset it to 0
+                if (x > (float)width_ - 150.0f && x < (float)width_ - 50.0f) {
+                    acceleratorValue_ = 0.0f;
                 }
             }
         }

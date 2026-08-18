@@ -54,6 +54,16 @@ public class MainActivity extends GameActivity implements SensorEventListener {
     public native void setDamageEnabled(boolean enabled);
     public native void resetVehicle();
 
+    public native void shiftGear(int delta);
+    public native void toggle4x4();
+    public native void toggleDiffLock();
+    public native void toggleTC();
+    public native void buyUpgradeTorque();
+    public native void repairVehicle();
+    public native void purchaseVehicle(int index);
+    public native void purchaseAddon(int index);
+    public native void acceptMission(int cargoTypeIndex);
+
     public void savePlayerData(long money, String vehicleData, String addonData, float fuel, float fuelCap) {
         android.content.SharedPreferences prefs = getSharedPreferences("TrilheiroPrefs", MODE_PRIVATE);
         android.content.SharedPreferences.Editor editor = prefs.edit();
