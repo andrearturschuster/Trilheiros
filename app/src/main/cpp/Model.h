@@ -23,10 +23,18 @@ union Vector2 {
 };
 
 struct Vertex {
-    constexpr Vertex(const Vector3 &inPosition, const Vector2 &inUV) : position(inPosition),
-                                                                       uv(inUV) {}
+    // Back-compatible: quads without an explicit normal default to facing up (+Y).
+    Vertex(const Vector3 &inPosition, const Vector2 &inUV)
+            : position(inPosition), uv(inUV) {
+        normal.x = 0.f; normal.y = 1.f; normal.z = 0.f;
+    }
+
+    // Full constructor used by loaded 3D meshes.
+    constexpr Vertex(const Vector3 &inPosition, const Vector3 &inNormal, const Vector2 &inUV)
+            : position(inPosition), normal(inNormal), uv(inUV) {}
 
     Vector3 position;
+    Vector3 normal;
     Vector2 uv;
 };
 

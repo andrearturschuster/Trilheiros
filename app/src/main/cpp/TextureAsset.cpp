@@ -4,7 +4,8 @@
 #include "Utility.h"
 
 std::shared_ptr<TextureAsset>
-TextureAsset::loadAsset(AAssetManager *assetManager, const std::string &assetPath) {
+TextureAsset::loadAsset(AAssetManager *assetManager, const std::string &assetPath,
+                        GLint wrapMode, bool useMipmap) {
     // Get the image from asset manager
     auto pAndroidRobotPng = AAssetManager_open(
             assetManager,
@@ -42,12 +43,20 @@ TextureAsset::loadAsset(AAssetManager *assetManager, const std::string &assetPat
     glGenTextures(1, &textureId);
     glBindTexture(GL_TEXTURE_2D, textureId);
 
-    // Clamp to the edge, you'll get odd results alpha blending if you don't
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    // Wrap mode: GL_REPEAT lets tiling textures (e.g. the ground with UVs 0..20)
+    // repeat correctly. Pass GL_CLAMP_TO_EDGE for transparent sprites (car, tree)
+    // to avoid alpha bleeding at the borders.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapMode);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapMode);
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    if (useMipmap) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    } else {
+        // Crisp, no interpolation between neighbouring pixels/cells (palette texture).
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
 
     // Load the texture into VRAM
     glTexImage2D(
@@ -63,7 +72,9 @@ TextureAsset::loadAsset(AAssetManager *assetManager, const std::string &assetPat
     );
 
     // generate mip levels. Not really needed for 2D, but good to do
-    glGenerateMipmap(GL_TEXTURE_2D);
+    if (useMipmap) {
+        glGenerateMipmap(GL_TEXTURE_2D);
+    }
 
     // cleanup helpers
     AImageDecoder_delete(pAndroidDecoder);

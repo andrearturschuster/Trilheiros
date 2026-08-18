@@ -33,6 +33,7 @@ public:
             const std::string &fragmentSource,
             const std::string &positionAttributeName,
             const std::string &uvAttributeName,
+            const std::string &normalAttributeName,
             const std::string &projectionMatrixUniformName,
             const std::string &colorUniformName,
             const std::string &modelMatrixUniformName,
@@ -103,6 +104,7 @@ private:
             GLuint program,
             GLint position,
             GLint uv,
+            GLint normal,
             GLint projectionMatrix,
             GLint color,
             GLint modelMatrix,
@@ -113,6 +115,7 @@ private:
             : program_(program),
               position_(position),
               uv_(uv),
+              normal_(normal),
               projectionMatrix_(projectionMatrix),
               color_(color),
               modelMatrix_(modelMatrix),
@@ -124,6 +127,7 @@ private:
     GLuint program_;
     GLint position_;
     GLint uv_;
+    GLint normal_;
     GLint projectionMatrix_;
     GLint color_;
     GLint modelMatrix_;

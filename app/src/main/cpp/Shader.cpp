@@ -9,6 +9,7 @@ Shader *Shader::loadShader(
         const std::string &fragmentSource,
         const std::string &positionAttributeName,
         const std::string &uvAttributeName,
+        const std::string &normalAttributeName,
         const std::string &projectionMatrixUniformName,
         const std::string &colorUniformName,
         const std::string &modelMatrixUniformName,
@@ -55,6 +56,7 @@ Shader *Shader::loadShader(
             // indices with layout= in your shader, but it is not done in this sample
             GLint positionAttribute = glGetAttribLocation(program, positionAttributeName.c_str());
             GLint uvAttribute = glGetAttribLocation(program, uvAttributeName.c_str());
+            GLint normalAttribute = glGetAttribLocation(program, normalAttributeName.c_str());
             GLint projectionMatrixUniform = glGetUniformLocation(
                     program,
                     projectionMatrixUniformName.c_str());
@@ -79,6 +81,7 @@ Shader *Shader::loadShader(
                         program,
                         positionAttribute,
                         uvAttribute,
+                        normalAttribute,
                         projectionMatrixUniform,
                         colorUniform,
                         modelMatrixUniform,
@@ -153,16 +156,29 @@ void Shader::drawModel(const Model &model) const {
     );
     glEnableVertexAttribArray(position_);
 
-    // The uv attribute is 2 floats
+    // The uv attribute is 2 floats (now after position + normal)
     glVertexAttribPointer(
             uv_, // attrib
             2, // elements
             GL_FLOAT, // of type float
             GL_FALSE, // don't normalize
             sizeof(Vertex), // stride is Vertex bytes
-            (void*)sizeof(Vector3) // offset Vector3 from the start
+            (void*)(2 * sizeof(Vector3)) // offset: past position and normal
     );
     glEnableVertexAttribArray(uv_);
+
+    // The normal attribute is 3 floats, right after the position
+    if (normal_ != -1) {
+        glVertexAttribPointer(
+                normal_,
+                3,
+                GL_FLOAT,
+                GL_FALSE,
+                sizeof(Vertex),
+                (void*)sizeof(Vector3) // offset: past position
+        );
+        glEnableVertexAttribArray(normal_);
+    }
 
     // Setup the texture
     glActiveTexture(GL_TEXTURE0);
@@ -172,6 +188,7 @@ void Shader::drawModel(const Model &model) const {
     glDrawElements(GL_TRIANGLES, model.getIndexCount(), GL_UNSIGNED_SHORT, nullptr);
 
     glDisableVertexAttribArray(uv_);
+    if (normal_ != -1) glDisableVertexAttribArray(normal_);
     glDisableVertexAttribArray(position_);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);

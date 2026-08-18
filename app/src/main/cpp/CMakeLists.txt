@@ -13,6 +13,7 @@ add_library(trilheiro SHARED
         Renderer.cpp
         Shader.cpp
         TextureAsset.cpp
+        MeshAsset.cpp
         Utility.cpp)
 
 # Searches for a package provided by the game activity dependency

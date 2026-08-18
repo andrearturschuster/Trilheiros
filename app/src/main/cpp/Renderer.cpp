@@ -19,6 +19,7 @@
 #include "Shader.h"
 #include "Utility.h"
 #include "TextureAsset.h"
+#include "MeshAsset.h"
 
 //! executes glGetString and outputs the result to logcat
 #define PRINT_GL_STRING(s) {aout << #s": "<< glGetString(s) << std::endl;}
@@ -46,9 +47,11 @@ aout << std::endl;\
 static const char *vertex = R"vertex(#version 300 es
 in vec3 inPosition;
 in vec2 inUV;
+in vec3 inNormal;
 
 out vec2 fragUV;
 out vec3 fragPos;
+out vec3 fragNormal;
 
 uniform mat4 uMVP;
 uniform mat4 uModel;
@@ -56,6 +59,8 @@ uniform mat4 uModel;
 void main() {
     fragUV = inUV;
     fragPos = vec3(uModel * vec4(inPosition, 1.0));
+    // Props use translation+rotation only, so mat3(uModel) is fine for normals.
+    fragNormal = mat3(uModel) * inNormal;
     gl_Position = uMVP * vec4(inPosition, 1.0);
 }
 )vertex";
@@ -66,6 +71,7 @@ precision highp float;
 
 in vec2 fragUV;
 in vec3 fragPos;
+in vec3 fragNormal;
 
 uniform sampler2D uTexture;
 uniform vec4 uColor;
@@ -79,6 +85,16 @@ out vec4 outColor;
 
 void main() {
     vec4 texColor = texture(uTexture, fragUV) * uColor;
+
+    // Ambient + directional (sun) diffuse. The sun points mostly straight down,
+    // so flat quads (ground, UI, effects) with an up-facing normal stay near full
+    // brightness, while the side faces of 3D meshes get shaded -> reads as 3D.
+    vec3 N = normalize(fragNormal);
+    vec3 sunDir = normalize(vec3(0.3, 1.0, 0.2));
+    float diffuse = max(dot(N, sunDir), 0.0);
+    float shade = 0.55 + 0.45 * diffuse;
+    texColor.rgb *= shade;
+
     if (uLightEnabled) {
         vec3 lightToFrag = normalize(fragPos - uLightPos);
         float dist = length(fragPos - uLightPos);
@@ -1180,7 +1196,7 @@ void Renderer::initRenderer() {
     PRINT_GL_STRING_AS_LIST(GL_EXTENSIONS);
 
     shader_ = std::unique_ptr<Shader>(
-            Shader::loadShader(vertex, fragment, "inPosition", "inUV", "uMVP", "uColor",
+            Shader::loadShader(vertex, fragment, "inPosition", "inUV", "inNormal", "uMVP", "uColor",
                                "uModel", "uLightPos", "uLightDir", "uLightColor", "uLightEnabled"));
     assert(shader_);
 
@@ -1216,56 +1232,51 @@ void Renderer::updateRenderArea() {
 
 void Renderer::createModels() {
     auto assetManager = app_->activity->assetManager;
-    // Usamos uma textura branca opaca (1x1) em vez do robô do Android:
-    // o robô tem fundo transparente e "apaga" a maior parte de cada quad
-    // (chão, carro, barras de UI) por causa do alpha=0 nas bordas.
-    // Com branco opaco, texture()*uColor vira só uColor, e as cores sólidas
-    // definidas pelo jogo (setColor) aparecem corretamente.
-    auto spTexture = TextureAsset::loadAsset(assetManager, "white.png");
+
+    // ---------------------------------------------------------------------
+    // Texturas
+    //   - grass/mud/rock: superficies planas (chao, lama, rampa), com mipmap.
+    //   - white: quad da interface (HUD).
+    //   - palette: textura de cores solidas usada por TODAS as malhas 3D.
+    //     Cada face amostra o centro de uma celula; carregada com NEAREST e
+    //     sem mipmap para nao vazar cor entre celulas. A iluminacao por normal
+    //     (no shader) sombreia as faces e da o aspecto 3D.
+    // As malhas 3D vem de arquivos .obj em assets/ (carregados por MeshAsset).
+    // Para usar arte propria, basta substituir o .obj (ou o palette.png).
+    // ---------------------------------------------------------------------
+    auto spWhite   = TextureAsset::loadAsset(assetManager, "white.png");
+    auto spGrass   = TextureAsset::loadAsset(assetManager, "grass.png");
+    auto spMud     = TextureAsset::loadAsset(assetManager, "mud.png");
+    auto spRock    = TextureAsset::loadAsset(assetManager, "rock.png");
+    auto spPalette = TextureAsset::loadAsset(assetManager, "palette.png",
+                                             GL_CLAMP_TO_EDGE, /*useMipmap=*/false);
+
+    // Helper: load an .obj mesh and register it as the next model.
+    auto addMesh = [&](const char *obj, std::shared_ptr<TextureAsset> tex) {
+        auto md = MeshAsset::loadObj(assetManager, obj);
+        models_.emplace_back(md.vertices, md.indices, tex);
+        models_.back().uploadToGPU();
+    };
 
     std::vector<Index> indices = {
             0, 1, 2, 0, 2, 3
     };
 
-    // Model 0: Ground
+    // Model 0: Ground (flat quad, tiled grass texture)
     std::vector<Vertex> groundVertices = {
             Vertex(Vector3{50.f, 0.f, 50.f}, Vector2{0.f, 0.f}),
             Vertex(Vector3{-50.f, 0.f, 50.f}, Vector2{20.f, 0.f}),
             Vertex(Vector3{-50.f, 0.f, -50.f}, Vector2{20.f, 20.f}),
             Vertex(Vector3{50.f, 0.f, -50.f}, Vector2{0.f, 20.f})
     };
-    models_.emplace_back(groundVertices, indices, spTexture);
+    models_.emplace_back(groundVertices, indices, spGrass);
     models_.back().uploadToGPU();
 
-    // Model 1: Car
-    std::vector<Vertex> carVertices = {
-            Vertex(Vector3{0.5f, 0.f, 1.f}, Vector2{0.f, 0.f}),
-            Vertex(Vector3{-0.5f, 0.f, 1.f}, Vector2{1.f, 0.f}),
-            Vertex(Vector3{-0.5f, 0.f, -1.f}, Vector2{1.f, 1.f}),
-            Vertex(Vector3{0.5f, 0.f, -1.f}, Vector2{0.f, 1.f})
-    };
-    models_.emplace_back(carVertices, indices, spTexture);
-    models_.back().uploadToGPU();
+    // Model 1: Car (3D mesh)
+    addMesh("car.obj", spPalette);
 
-    // Model 2: Tree (Crossing Quads)
-    std::vector<Vertex> treeVertices = {
-            // Quad 1
-            Vertex(Vector3{0.5f, 0.f, 0.f}, Vector2{0.f, 0.f}),
-            Vertex(Vector3{-0.5f, 0.f, 0.f}, Vector2{1.f, 0.f}),
-            Vertex(Vector3{-0.5f, 2.f, 0.f}, Vector2{1.f, 1.f}),
-            Vertex(Vector3{0.5f, 2.f, 0.f}, Vector2{0.f, 1.f}),
-            // Quad 2
-            Vertex(Vector3{0.f, 0.f, 0.5f}, Vector2{0.f, 0.f}),
-            Vertex(Vector3{0.f, 0.f, -0.5f}, Vector2{1.f, 0.f}),
-            Vertex(Vector3{0.f, 2.f, -0.5f}, Vector2{1.f, 1.f}),
-            Vertex(Vector3{0.f, 2.f, 0.5f}, Vector2{0.f, 1.f})
-    };
-    std::vector<Index> treeIndices = {
-            0, 1, 2, 0, 2, 3,
-            4, 5, 6, 4, 6, 7
-    };
-    models_.emplace_back(treeVertices, treeIndices, spTexture);
-    models_.back().uploadToGPU();
+    // Model 2: Tree (3D mesh)
+    addMesh("tree.obj", spPalette);
 
     // Generate random obstacles
     for (int i = 0; i < 30; ++i) {
@@ -1277,141 +1288,59 @@ void Renderer::createModels() {
         }
     }
 
-    // Model 3: UI Quad (-1 to 1)
+    // Model 3: UI Quad (-1 to 1) -- 2D HUD, stays a flat quad
     std::vector<Vertex> uiVertices = {
             Vertex(Vector3{-1.f, -1.f, 0.f}, Vector2{0.f, 0.f}),
             Vertex(Vector3{1.f, -1.f, 0.f}, Vector2{1.f, 0.f}),
             Vertex(Vector3{1.f, 1.f, 0.f}, Vector2{1.f, 1.f}),
             Vertex(Vector3{-1.f, 1.f, 0.f}, Vector2{0.f, 1.f})
     };
-    models_.emplace_back(uiVertices, indices, spTexture);
+    models_.emplace_back(uiVertices, indices, spWhite);
     models_.back().uploadToGPU();
 
-    // Model 4: Roof Rack (Small quad on top)
-    std::vector<Vertex> roofRackVertices = {
-            Vertex(Vector3{0.4f, 0.f, 0.4f}, Vector2{0.f, 0.f}),
-            Vertex(Vector3{-0.4f, 0.f, 0.4f}, Vector2{1.f, 0.f}),
-            Vertex(Vector3{-0.4f, 0.f, -0.4f}, Vector2{1.f, 1.f}),
-            Vertex(Vector3{0.4f, 0.f, -0.4f}, Vector2{0.f, 1.f})
-    };
-    models_.emplace_back(roofRackVertices, indices, spTexture);
-    models_.back().uploadToGPU();
+    // Model 4: Roof Rack (3D mesh)
+    addMesh("rack.obj", spPalette);
 
-    // Model 5: Trailer (Quad with hitch offset)
-    std::vector<Vertex> trailerVertices = {
-            Vertex(Vector3{0.6f, 0.f, 1.0f}, Vector2{0.f, 0.f}),
-            Vertex(Vector3{-0.6f, 0.f, 1.0f}, Vector2{1.f, 0.f}),
-            Vertex(Vector3{-0.6f, 0.f, -1.0f}, Vector2{1.f, 1.f}),
-            Vertex(Vector3{0.6f, 0.f, -1.0f}, Vector2{0.f, 1.f})
-    };
-    models_.emplace_back(trailerVertices, indices, spTexture);
-    models_.back().uploadToGPU();
+    // Model 5: Trailer (3D mesh)
+    addMesh("trailer.obj", spPalette);
 
-    // Model 6: Box (Small cube-like)
-    std::vector<Vertex> boxVertices = {
-            Vertex(Vector3{0.3f, 0.0f, 0.3f}, Vector2{0.0f, 0.0f}),
-            Vertex(Vector3{-0.3f, 0.0f, 0.3f}, Vector2{1.0f, 0.0f}),
-            Vertex(Vector3{-0.3f, 0.6f, 0.3f}, Vector2{1.0f, 1.0f}),
-            Vertex(Vector3{0.3f, 0.6f, 0.3f}, Vector2{0.0f, 1.0f}),
+    // Model 6: Box / crate (3D mesh)
+    addMesh("crate.obj", spPalette);
 
-            Vertex(Vector3{0.3f, 0.0f, -0.3f}, Vector2{0.0f, 0.0f}),
-            Vertex(Vector3{-0.3f, 0.0f, -0.3f}, Vector2{1.0f, 0.0f}),
-            Vertex(Vector3{-0.3f, 0.6f, -0.3f}, Vector2{1.0f, 1.0f}),
-            Vertex(Vector3{0.3f, 0.6f, -0.3f}, Vector2{0.0f, 1.0f})
-    };
-    std::vector<Index> cubeIndices = { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
-    models_.emplace_back(boxVertices, cubeIndices, spTexture);
-    models_.back().uploadToGPU();
+    // Model 7: Barrel (3D mesh)
+    addMesh("barrel.obj", spPalette);
 
-    // Model 7: Barrel (Cylinder-ish)
-    std::vector<Vertex> barrelVertices = {
-            Vertex(Vector3{0.3f, 0.0f, 0.0f}, Vector2{0.0f, 0.0f}),
-            Vertex(Vector3{-0.3f, 0.0f, 0.0f}, Vector2{1.0f, 0.0f}),
-            Vertex(Vector3{-0.3f, 0.8f, 0.0f}, Vector2{1.0f, 1.0f}),
-            Vertex(Vector3{0.3f, 0.8f, 0.0f}, Vector2{0.0f, 1.0f}),
+    // Model 8: Logs (3D mesh)
+    addMesh("logs.obj", spPalette);
 
-            Vertex(Vector3{0.0f, 0.0f, 0.3f}, Vector2{0.0f, 0.0f}),
-            Vertex(Vector3{0.0f, 0.0f, -0.3f}, Vector2{1.0f, 0.0f}),
-            Vertex(Vector3{0.0f, 0.8f, -0.3f}, Vector2{1.0f, 1.0f}),
-            Vertex(Vector3{0.0f, 0.8f, 0.3f}, Vector2{0.0f, 1.0f})
-    };
-    models_.emplace_back(barrelVertices, cubeIndices, spTexture);
-    models_.back().uploadToGPU();
+    // Model 9: Container (3D mesh)
+    addMesh("container.obj", spPalette);
 
-    // Model 8: Logs (Long cylinders)
-    std::vector<Vertex> logVertices = {
-            Vertex(Vector3{0.8f, 0.0f, 0.2f}, Vector2{0.0f, 0.0f}),
-            Vertex(Vector3{-0.8f, 0.0f, 0.2f}, Vector2{1.0f, 0.0f}),
-            Vertex(Vector3{-0.8f, 0.3f, 0.2f}, Vector2{1.0f, 1.0f}),
-            Vertex(Vector3{0.8f, 0.3f, 0.2f}, Vector2{0.0f, 1.0f}),
-
-            Vertex(Vector3{0.8f, 0.3f, -0.2f}, Vector2{0.0f, 0.0f}),
-            Vertex(Vector3{-0.8f, 0.3f, -0.2f}, Vector2{1.0f, 0.0f}),
-            Vertex(Vector3{-0.8f, 0.6f, -0.2f}, Vector2{1.0f, 1.0f}),
-            Vertex(Vector3{0.8f, 0.6f, -0.2f}, Vector2{0.0f, 1.0f})
-    };
-    models_.emplace_back(logVertices, cubeIndices, spTexture);
-    models_.back().uploadToGPU();
-
-    // Model 9: Container (Large box)
-    std::vector<Vertex> containerVertices = {
-            Vertex(Vector3{0.6f, 0.0f, 1.5f}, Vector2{0.0f, 0.0f}),
-            Vertex(Vector3{-0.6f, 0.0f, 1.5f}, Vector2{1.0f, 0.0f}),
-            Vertex(Vector3{-0.6f, 1.2f, 1.5f}, Vector2{1.0f, 1.0f}),
-            Vertex(Vector3{0.6f, 1.2f, 1.5f}, Vector2{0.0f, 1.0f}),
-
-            Vertex(Vector3{0.6f, 0.0f, -1.5f}, Vector2{0.0f, 0.0f}),
-            Vertex(Vector3{-0.6f, 0.0f, -1.5f}, Vector2{1.0f, 0.0f}),
-            Vertex(Vector3{-0.6f, 1.2f, -1.5f}, Vector2{1.0f, 1.0f}),
-            Vertex(Vector3{0.6f, 1.2f, -1.5f}, Vector2{0.0f, 1.0f})
-    };
-    models_.emplace_back(containerVertices, cubeIndices, spTexture);
-    models_.back().uploadToGPU();
-
-    // Model 10: Mud Zone (Flat quad slightly above ground)
+    // Model 10: Mud Zone (flat quad, tinted brown via setColor)
     std::vector<Vertex> mudVertices = {
             Vertex(Vector3{1.0f, 0.01f, 1.0f}, Vector2{0.0f, 0.0f}),
             Vertex(Vector3{-1.0f, 0.01f, 1.0f}, Vector2{1.0f, 0.0f}),
             Vertex(Vector3{-1.0f, 0.01f, -1.0f}, Vector2{1.0f, 1.0f}),
             Vertex(Vector3{1.0f, 0.01f, -1.0f}, Vector2{0.0f, 1.0f})
     };
-    models_.emplace_back(mudVertices, indices, spTexture);
+    models_.emplace_back(mudVertices, indices, spMud);
     models_.back().uploadToGPU();
 
-    // Model 11: Ramp (Sloped quad)
+    // Model 11: Ramp (sloped quad, tinted grey via setColor)
     std::vector<Vertex> rampVertices = {
             Vertex(Vector3{1.0f, 1.0f, 1.0f}, Vector2{0.0f, 0.0f}), // Top Front
             Vertex(Vector3{-1.0f, 1.0f, 1.0f}, Vector2{1.0f, 0.0f}), // Top Front
             Vertex(Vector3{-1.0f, 0.0f, -1.0f}, Vector2{1.0f, 1.0f}), // Bottom Back
             Vertex(Vector3{1.0f, 0.0f, -1.0f}, Vector2{0.0f, 1.0f})  // Bottom Back
     };
-    models_.emplace_back(rampVertices, indices, spTexture);
+    models_.emplace_back(rampVertices, indices, spRock);
     models_.back().uploadToGPU();
 
-    // Model 12: Checkpoint (Thin tall quad)
-    std::vector<Vertex> cpVertices = {
-            Vertex(Vector3{0.1f, 0.0f, 0.0f}, Vector2{0.0f, 0.0f}),
-            Vertex(Vector3{-0.1f, 0.0f, 0.0f}, Vector2{1.0f, 0.0f}),
-            Vertex(Vector3{-0.1f, 4.0f, 0.0f}, Vector2{1.0f, 1.0f}),
-            Vertex(Vector3{0.1f, 4.0f, 0.0f}, Vector2{0.0f, 1.0f})
-    };
-    models_.emplace_back(cpVertices, indices, spTexture);
-    models_.back().uploadToGPU();
+    // Model 12: Checkpoint (3D pole mesh; white palette cell -> tinted yellow/green)
+    addMesh("checkpoint.obj", spPalette);
 
-    // Model 13: Fuel Pump (Box/Quad)
-    std::vector<Vertex> pumpVertices = {
-            Vertex(Vector3{0.4f, 0.0f, 0.4f}, Vector2{0.0f, 0.0f}),
-            Vertex(Vector3{-0.4f, 0.0f, 0.4f}, Vector2{1.0f, 0.0f}),
-            Vertex(Vector3{-0.4f, 1.5f, 0.4f}, Vector2{1.0f, 1.0f}),
-            Vertex(Vector3{0.4f, 1.5f, 0.4f}, Vector2{0.0f, 1.0f}),
-
-            Vertex(Vector3{0.4f, 0.0f, -0.4f}, Vector2{0.0f, 0.0f}),
-            Vertex(Vector3{-0.4f, 0.0f, -0.4f}, Vector2{1.0f, 0.0f}),
-            Vertex(Vector3{-0.4f, 1.5f, -0.4f}, Vector2{1.0f, 1.0f}),
-            Vertex(Vector3{0.4f, 1.5f, -0.4f}, Vector2{0.0f, 1.0f})
-    };
-    models_.emplace_back(pumpVertices, cubeIndices, spTexture);
-    models_.back().uploadToGPU();
+    // Model 13: Fuel Pump (3D mesh; tinted red via setColor)
+    addMesh("pump.obj", spPalette);
 }
 
 void Renderer::handleInput() {
